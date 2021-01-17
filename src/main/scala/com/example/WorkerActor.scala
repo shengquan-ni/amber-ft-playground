@@ -1,17 +1,19 @@
 package com.example
 
-import java.util.concurrent.Executors
+import java.util.concurrent.{CompletableFuture, Executors, LinkedBlockingDeque}
 
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{AbstractBehavior, ActorContext, Behaviors}
-import com.example.ControllerActor.ControllerMessage
+import com.example.ControllerActor.{ControllerMessage, Log}
+
+import scala.collection.mutable
 
 object WorkerActor {
 
   sealed trait WorkerMessage
 
-  final case class DataMessage(seq:Long, dataPayload: RunnableMessage) extends WorkerMessage
-  final case class ControlMessage(seq:Long, controlPayload: RunnableMessage) extends WorkerMessage
+  final case class DataMessage(sender:String, seq:Long, dataPayload: RunnableMessage) extends WorkerMessage
+  final case class ControlMessage(sender:String, seq:Long, controlPayload: RunnableMessage) extends WorkerMessage
 
   def apply(parent:ActorRef[ControllerMessage]): Behavior[WorkerMessage] =
     Behaviors.setup(context => new WorkerBehavior(parent, context))
@@ -20,27 +22,80 @@ object WorkerActor {
 
     def funToRunnable(fun: () => Unit): Runnable = new Runnable() { def run(): Unit = fun() }
 
-    val output = new MutableState(parent,context.self,context)
+    var output = new MutableState("worker", parent,context.self,context)
 
-    val controlFIFOGate = new OrderingEnforcer[RunnableMessage]
-    val dataFIFOGate = new OrderingEnforcer[RunnableMessage]
+    val controlFIFOGate = new mutable.AnyRefMap[String, OrderingEnforcer[ControlMessage]]
+    val dataFIFOGate = new mutable.AnyRefMap[String, OrderingEnforcer[DataMessage]]
 
+    val internalQueue = new LinkedBlockingDeque[Option[RunnableMessage]]
     val dp = Executors.newSingleThreadExecutor()
+    var blocker:CompletableFuture[Void] = null
+    var isPaused = false
+    var dataCursor = 0L
+
+    GlobalControl.workerState = output
+
+    dp.submit{
+      new Runnable() {
+        def run(): Unit = {
+          try {
+            while(true){
+              val msg = internalQueue.take()
+              if(msg.isDefined){
+                dataCursor += 1
+                msg.get.invoke(output)
+              }
+              if(isPaused){
+                blocker = new CompletableFuture[Void]
+                blocker.get
+              }
+            }
+          } catch {
+            case e: Exception =>
+              throw new RuntimeException(e)
+          }
+        }
+      }
+    }
 
     override def onMessage(message: WorkerMessage): Behavior[WorkerMessage] = {
       message match {
         case payload: DataMessage =>
-          dataFIFOGate.enforceFIFO(payload.seq, payload.dataPayload).foreach {
-            println(s"------------------- worker received data message with seq = ${payload.seq} -------------------")
-            i => dp.submit(funToRunnable(() => i.invoke(output)))
+          OrderingEnforcer.reorderMessage(dataFIFOGate, payload.sender, payload.seq, payload).foreach {
+            i =>
+              i.foreach{
+                m =>
+                  println(s"------------------- worker received data message with seq = ${m.seq} from ${m.sender} -------------------")
+                  internalQueue.add(Some(m.dataPayload))
+              }
           }
         case payload: ControlMessage =>
-          controlFIFOGate.enforceFIFO(payload.seq, payload.controlPayload).foreach {
-            println(s"------------------- worker received control message with seq = ${payload.seq} -------------------")
-            func => func.invoke(output)
+          OrderingEnforcer.reorderMessage(controlFIFOGate, payload.sender, payload.seq, payload).foreach {
+            i =>
+              i.foreach{
+                m =>
+                  println(s"------------------- worker received control message with seq = ${m.seq} from ${m.sender} -------------------")
+                  println("ready to pause DP thread")
+                  GlobalControl.promptCrash()
+                  syncWithDPThread()
+                  println("ready to send log to controller")
+                  GlobalControl.promptCrash()
+                  output.sendLogToController(m.controlPayload, dataCursor)
+                  println("ready to execute message")
+                  GlobalControl.promptCrash()
+                  m.controlPayload.invoke(output)
+                  println("executed message")
+                  GlobalControl.promptCrash()
+              }
           }
       }
       Behaviors.same
+    }
+
+    def syncWithDPThread(): Unit = {
+      isPaused = true
+      internalQueue.add(None)
+      while(blocker != null && blocker.isDone){}
     }
   }
 }

@@ -1,5 +1,5 @@
 package com.example
-
+import scala.io.StdIn.readLine
 
 class RunnableMessage(protected val calls: Iterable[MutableState => Unit]) {
 
@@ -9,7 +9,8 @@ class RunnableMessage(protected val calls: Iterable[MutableState => Unit]) {
 
   def invoke(output: MutableState): Unit = {
     calls.foreach{
-      call => call(output)
+      call =>
+        call(output)
     }
   }
 
