@@ -5,6 +5,7 @@ import java.util.concurrent.{CompletableFuture, Executors, LinkedBlockingDeque}
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{AbstractBehavior, ActorContext, Behaviors}
 import com.example.ControllerActor.{ControllerMessage, Log}
+import com.twitter.util.{Future, Promise}
 
 import scala.collection.mutable
 
@@ -22,7 +23,7 @@ object WorkerActor {
 
     def funToRunnable(fun: () => Unit): Runnable = new Runnable() { def run(): Unit = fun() }
 
-    var state = new MutableState()
+    var state = new MutableState("worker")
     var outputChannel = new WorkerOutputChannel(parent)
 
     val controlFIFOGate = new mutable.AnyRefMap[String, OrderingEnforcer[ControlMessage]]
@@ -31,8 +32,12 @@ object WorkerActor {
     val internalQueue = new LinkedBlockingDeque[Option[RunnableMessage[WorkerOutputChannel]]]
     val dp = Executors.newSingleThreadExecutor()
     var blocker:CompletableFuture[Void] = null
-    var isPaused = false
+    var rootPausePromise:Promise[Unit] = null
+    var pauseFuture:Future[Unit] = null
+    def isPaused: Boolean = rootPausePromise != null && !rootPausePromise.isDefined
     var dataCursor = 0L
+    var needRelease = true
+    var finishedExecutingControl = false
 
     GlobalControl.workerState = state
     GlobalControl.workerOutput = outputChannel
@@ -49,9 +54,11 @@ object WorkerActor {
                 dataCursor += 1
                 msg.get.invoke(state, outputChannel)
               }
+              println("dp thread looped once")
               recover(dataCursor)
               if(isPaused){
-                blocker = new CompletableFuture[Void]
+                blocker = new CompletableFuture[Void]()
+                rootPausePromise.setValue()
                 blocker.get
               }
             }
@@ -68,10 +75,21 @@ object WorkerActor {
       Behaviors.same
     }
 
-    def syncWithDPThread(): Unit = {
-      isPaused = true
-      internalQueue.add(None)
-      while(blocker != null && blocker.isDone){}
+    def syncWithDPThread(): Future[Unit] = {
+      if(isPaused){
+        //dp thread paused or pausing
+        //in this case, returning pausePromise is safe
+        //if pausePromise is already fulfilled, onSuccess call will be invoked directly
+        //if pausePromise is not fulfilled, onSuccess call will be invoked in dp thread
+        println("syncWithDPThread: dp thread paused")
+        pauseFuture
+      }else{
+        // dp thread running
+        println("syncWithDPThread: dp thread running, pause it")
+        rootPausePromise = new Promise[Unit]()
+        internalQueue.add(None)
+        rootPausePromise
+      }
     }
 
 
@@ -99,18 +117,26 @@ object WorkerActor {
               i.foreach{
                 m =>
                   println(s"------------------- ${name} received control message with seq = ${m.seq} from ${m.sender} -------------------")
-                  println("ready to pause DP thread")
-                  GlobalControl.promptCrash()
-                  syncWithDPThread()
-                  println("ready to send log to controller")
-                  GlobalControl.promptCrash()
-                  outputChannel.processAndLog(payload.seq, dataCursor)
-                  println("ready to execute message")
-                  GlobalControl.promptCrash()
-                  m.controlPayload.invoke(state, outputChannel)
-                  blocker.complete(null)
-                  println("executed message")
-                  GlobalControl.promptCrash()
+//                  println("ready to pause DP thread")
+//                  GlobalControl.promptCrash()
+                  pauseFuture = syncWithDPThread().map{
+                    x =>
+                      println(s"control execution: dp thread process control with seq = ${m.seq} on ${Thread.currentThread().getName}")
+                      // println("ready to send log to controller")
+                      // GlobalControl.promptCrash()
+                      outputChannel.processAndLog(m.seq, dataCursor)
+                      // println("ready to execute message")
+                      // GlobalControl.promptCrash()
+                      m.controlPayload.invoke(state, outputChannel)
+                      if(needRelease) {
+                        if (!blocker.isDone) {
+                          blocker.complete(null)
+                        }
+                        println(s"control execution: dp thread released on ${Thread.currentThread().getName}")
+                      }
+//                      println("executed message")
+//                      GlobalControl.promptCrash()
+                  }
               }
           }
       }

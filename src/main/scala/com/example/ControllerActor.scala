@@ -20,7 +20,7 @@ object ControllerActor {
     var worker: ActorRef[WorkerMessage] = context.spawn(WorkerActor("worker", context.self),"worker")
     val controlFIFOGate = new mutable.AnyRefMap[String,OrderingEnforcer[FIFOMessage]]()
     val outputChannel = new ControllerOutputChannel(worker)
-    val state:MutableState = new MutableState()
+    val state:MutableState = new MutableState("controller")
     var ver = 0
 
     GlobalControl.controllerState = state

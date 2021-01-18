@@ -19,7 +19,10 @@ class RunnableMessage[T](protected val calls: Iterable[Call[T]]) {
 
   def invoke(state: MutableState, channel:T): Unit = {
     calls.foreach{
-      case RunnableMessage.StateChangeCall(call) => call(state)
+      case RunnableMessage.StateChangeCall(call) => {
+        print(s"on ${state.name}: ")
+        call(state)
+      }
       case RunnableMessage.SendCall(call) => call(channel)
     }
   }
