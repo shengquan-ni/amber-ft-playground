@@ -10,11 +10,8 @@ import scala.collection.mutable
 object ControllerActor {
 
   trait ControllerMessage
-
   case class Log(sender:String, seq:Long, id:Long, dataCursor:Long) extends FIFOMessage with ControllerMessage
-
   case class Execute(sender:String, seq:Long, payload:RunnableMessage[ControllerOutputChannel]) extends FIFOMessage with ControllerMessage
-
   case class RecoverWorker() extends ControllerMessage
 
   def apply(mainFunc:ControllerOutputChannel => Unit): Behavior[ControllerMessage] = Behaviors.setup(context => new ControllerBehavior(mainFunc, context))

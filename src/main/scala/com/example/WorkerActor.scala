@@ -108,6 +108,7 @@ object WorkerActor {
                   println("ready to execute message")
                   GlobalControl.promptCrash()
                   m.controlPayload.invoke(state, outputChannel)
+                  blocker.complete(null)
                   println("executed message")
                   GlobalControl.promptCrash()
               }
