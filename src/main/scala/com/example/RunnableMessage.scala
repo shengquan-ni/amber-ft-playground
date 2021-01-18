@@ -1,20 +1,30 @@
 package com.example
+import com.example.RunnableMessage.Call
+
 import scala.io.StdIn.readLine
 
-class RunnableMessage(protected val calls: Iterable[MutableState => Unit]) {
+object RunnableMessage{
+  sealed trait Call[T]
+  case class StateChangeCall[T](call:MutableState => Unit) extends Call[T]
+  case class SendCall[T](call:T => Unit) extends Call[T]
 
-  def this(call: MutableState => Unit){
+}
+
+
+class RunnableMessage[T](protected val calls: Iterable[Call[T]]) {
+
+  def this(call: Call[T]){
     this(Iterable(call))
   }
 
-  def invoke(output: MutableState): Unit = {
+  def invoke(state: MutableState, channel:T): Unit = {
     calls.foreach{
-      call =>
-        call(output)
+      case RunnableMessage.StateChangeCall(call) => call(state)
+      case RunnableMessage.SendCall(call) => call(channel)
     }
   }
 
-  def thenDo(next:RunnableMessage): RunnableMessage ={
+  def thenDo(next:RunnableMessage[T]): RunnableMessage[T] ={
     new RunnableMessage(calls ++ next.calls)
   }
 

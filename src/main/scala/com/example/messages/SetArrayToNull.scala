@@ -1,5 +1,6 @@
 package com.example.messages
 
 import com.example.RunnableMessage
+import com.example.RunnableMessage.StateChangeCall
 
-case class SetArrayToNull() extends RunnableMessage(output => output.arrayState = null)
+case class SetArrayToNull[T]() extends  RunnableMessage[T](StateChangeCall[T](state => state.arrayState = null))

@@ -1,5 +1,6 @@
 package com.example.messages
 
-import com.example.RunnableMessage
+import com.example.RunnableMessage.SendCall
+import com.example.{ControllerOutputChannel, RunnableMessage, WorkerOutputChannel}
 
-case class SendToController(msg:RunnableMessage) extends RunnableMessage(output => output.sendToController(msg))
+case class SendToController(msg:RunnableMessage[ControllerOutputChannel]) extends RunnableMessage[WorkerOutputChannel](SendCall[WorkerOutputChannel](channel => channel.sendToController(msg)))

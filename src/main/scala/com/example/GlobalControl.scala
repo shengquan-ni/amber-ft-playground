@@ -2,26 +2,27 @@ package com.example
 
 import java.util.concurrent.{CompletableFuture, Executors}
 
-import com.example.ControllerActor.Log
+import akka.actor.typed.ActorRef
+import com.example.ControllerActor.{ControllerMessage, Log, RecoverWorker}
 
 import scala.collection.mutable
 import scala.io.StdIn.readLine
 
 object GlobalControl {
 
+  var controllerRef:ActorRef[ControllerMessage] = _
   var controllerState:MutableState = _
   var workerState:MutableState = _
-  var controllerLog:mutable.Queue[Log] = _
-  var workerCrashed = false
+  var controllerOutput:ControllerOutputChannel = _
+  var workerOutput:WorkerOutputChannel = _
 
   def promptCrash(): Unit ={
     readLine("do you want to simulate a crash on worker? (y/N)").toLowerCase match{
       case "y" =>
-        workerCrashed = true
         printState(controllerState, "controller")
         printState(workerState, "worker")
         println("controller Log: ")
-        println(s"[${controllerLog.mkString("\n")}]")
+        println(s"[${controllerOutput.logs.mkString("\n")}]")
         promptRecovery()
         throw new RuntimeException("worker crashed")
       case other =>
@@ -31,10 +32,7 @@ object GlobalControl {
 
   def printState(state:MutableState, name:String):Unit ={
     println(s"$name state: \n" +
-      s"arrayState = ${state.arrayState.mkString(",")}\n" +
-      s"out seq for data to worker = ${state.dataSeq}\n" +
-      s"out seq for control to worker = ${state.controlSeq}\n" +
-      s"out seq for controller = ${state.controllerSeq}\n"
+      s"arrayState = ${state.arrayState.mkString(",")}\n"
     )
   }
 
@@ -45,7 +43,7 @@ object GlobalControl {
         //skip
       case other =>
         println("triggering recovery")
-        workerCrashed = false
+        controllerRef ! RecoverWorker()
     }
   }
 

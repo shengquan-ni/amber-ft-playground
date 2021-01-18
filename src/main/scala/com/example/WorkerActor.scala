@@ -10,30 +10,34 @@ import scala.collection.mutable
 
 object WorkerActor {
 
-  sealed trait WorkerMessage
+  sealed trait WorkerMessage extends FIFOMessage
 
-  final case class DataMessage(sender:String, seq:Long, dataPayload: RunnableMessage) extends WorkerMessage
-  final case class ControlMessage(sender:String, seq:Long, controlPayload: RunnableMessage) extends WorkerMessage
+  final case class DataMessage(sender:String, seq:Long, dataPayload: RunnableMessage[WorkerOutputChannel]) extends WorkerMessage
+  final case class ControlMessage(sender:String, seq:Long, controlPayload: RunnableMessage[WorkerOutputChannel]) extends WorkerMessage
 
-  def apply(parent:ActorRef[ControllerMessage]): Behavior[WorkerMessage] =
-    Behaviors.setup(context => new WorkerBehavior(parent, context))
+  def apply(parent:ActorRef[ControllerMessage], recoveryInfo:mutable.Queue[(WorkerMessage, Long)] = mutable.Queue.empty): Behavior[WorkerMessage] =
+    Behaviors.setup(context => new WorkerBehavior(parent, recoveryInfo, context))
 
-  class WorkerBehavior(parent:ActorRef[ControllerMessage], context: ActorContext[WorkerMessage]) extends AbstractBehavior[WorkerMessage](context) {
+  class WorkerBehavior(parent:ActorRef[ControllerMessage], recoveryInfo:mutable.Queue[(WorkerMessage, Long)], context: ActorContext[WorkerMessage]) extends AbstractBehavior[WorkerMessage](context) {
 
     def funToRunnable(fun: () => Unit): Runnable = new Runnable() { def run(): Unit = fun() }
 
-    var output = new MutableState("worker", parent,context.self,context)
+    var state = new MutableState()
+    var outputChannel = new WorkerOutputChannel(parent)
 
     val controlFIFOGate = new mutable.AnyRefMap[String, OrderingEnforcer[ControlMessage]]
     val dataFIFOGate = new mutable.AnyRefMap[String, OrderingEnforcer[DataMessage]]
 
-    val internalQueue = new LinkedBlockingDeque[Option[RunnableMessage]]
+    val internalQueue = new LinkedBlockingDeque[Option[RunnableMessage[WorkerOutputChannel]]]
     val dp = Executors.newSingleThreadExecutor()
     var blocker:CompletableFuture[Void] = null
     var isPaused = false
     var dataCursor = 0L
 
-    GlobalControl.workerState = output
+    GlobalControl.workerState = state
+    GlobalControl.workerOutput = outputChannel
+
+    recover(0)
 
     dp.submit{
       new Runnable() {
@@ -43,8 +47,9 @@ object WorkerActor {
               val msg = internalQueue.take()
               if(msg.isDefined){
                 dataCursor += 1
-                msg.get.invoke(output)
+                msg.get.invoke(state, outputChannel)
               }
+              recover(dataCursor)
               if(isPaused){
                 blocker = new CompletableFuture[Void]
                 blocker.get
@@ -59,7 +64,26 @@ object WorkerActor {
     }
 
     override def onMessage(message: WorkerMessage): Behavior[WorkerMessage] = {
-      message match {
+      processMessage(message)
+      Behaviors.same
+    }
+
+    def syncWithDPThread(): Unit = {
+      isPaused = true
+      internalQueue.add(None)
+      while(blocker != null && blocker.isDone){}
+    }
+
+
+    def recover(dataCursor:Long): Unit ={
+      while(recoveryInfo.nonEmpty && recoveryInfo.head._2 == dataCursor){
+        val msg = recoveryInfo.dequeue()
+        processMessage(msg._1)
+      }
+    }
+
+    def processMessage(msg:WorkerMessage): Unit ={
+      msg match {
         case payload: DataMessage =>
           OrderingEnforcer.reorderMessage(dataFIFOGate, payload.sender, payload.seq, payload).foreach {
             i =>
@@ -80,22 +104,15 @@ object WorkerActor {
                   syncWithDPThread()
                   println("ready to send log to controller")
                   GlobalControl.promptCrash()
-                  output.sendLogToController(m.controlPayload, dataCursor)
+                  outputChannel.processAndLog(payload.seq, dataCursor)
                   println("ready to execute message")
                   GlobalControl.promptCrash()
-                  m.controlPayload.invoke(output)
+                  m.controlPayload.invoke(state, outputChannel)
                   println("executed message")
                   GlobalControl.promptCrash()
               }
           }
       }
-      Behaviors.same
-    }
-
-    def syncWithDPThread(): Unit = {
-      isPaused = true
-      internalQueue.add(None)
-      while(blocker != null && blocker.isDone){}
     }
   }
 }
