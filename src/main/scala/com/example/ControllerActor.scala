@@ -20,10 +20,11 @@ object ControllerActor {
   def apply(mainFunc:ControllerOutputChannel => Unit): Behavior[ControllerMessage] = Behaviors.setup(context => new ControllerBehavior(mainFunc, context))
 
   class ControllerBehavior(mainFunc:ControllerOutputChannel => Unit, context: ActorContext[ControllerMessage]) extends AbstractBehavior[ControllerMessage](context){
-    var worker: ActorRef[WorkerMessage] = context.spawn(WorkerActor(context.self),"worker")
+    var worker: ActorRef[WorkerMessage] = context.spawn(WorkerActor("worker", context.self),"worker")
     val controlFIFOGate = new mutable.AnyRefMap[String,OrderingEnforcer[FIFOMessage]]()
     val outputChannel = new ControllerOutputChannel(worker)
     val state:MutableState = new MutableState()
+    var ver = 0
 
     GlobalControl.controllerState = state
     GlobalControl.controllerOutput = outputChannel
@@ -34,8 +35,10 @@ object ControllerActor {
         case message: FIFOMessage =>
           handleFIFOMessage(message)
         case recoverWorker: RecoverWorker =>
+          ver += 1
           context.stop(worker)
-          worker = context.spawn(WorkerActor(context.self, outputChannel.logs.clone()),"worker")
+          worker = context.spawnAnonymous(WorkerActor(s"worker(recovered version = $ver)", context.self, outputChannel.logs.clone()))
+          outputChannel.worker = worker
           outputChannel.resendUnLoggedControlMessages()
           outputChannel.resendDataMessages()
       }

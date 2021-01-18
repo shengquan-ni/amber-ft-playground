@@ -15,10 +15,10 @@ object WorkerActor {
   final case class DataMessage(sender:String, seq:Long, dataPayload: RunnableMessage[WorkerOutputChannel]) extends WorkerMessage
   final case class ControlMessage(sender:String, seq:Long, controlPayload: RunnableMessage[WorkerOutputChannel]) extends WorkerMessage
 
-  def apply(parent:ActorRef[ControllerMessage], recoveryInfo:mutable.Queue[(WorkerMessage, Long)] = mutable.Queue.empty): Behavior[WorkerMessage] =
-    Behaviors.setup(context => new WorkerBehavior(parent, recoveryInfo, context))
+  def apply(name:String, parent:ActorRef[ControllerMessage], recoveryInfo:mutable.Queue[(WorkerMessage, Long)] = mutable.Queue.empty): Behavior[WorkerMessage] =
+    Behaviors.setup(context => new WorkerBehavior(name, parent, recoveryInfo, context))
 
-  class WorkerBehavior(parent:ActorRef[ControllerMessage], recoveryInfo:mutable.Queue[(WorkerMessage, Long)], context: ActorContext[WorkerMessage]) extends AbstractBehavior[WorkerMessage](context) {
+  class WorkerBehavior(name:String, parent:ActorRef[ControllerMessage], recoveryInfo:mutable.Queue[(WorkerMessage, Long)], context: ActorContext[WorkerMessage]) extends AbstractBehavior[WorkerMessage](context) {
 
     def funToRunnable(fun: () => Unit): Runnable = new Runnable() { def run(): Unit = fun() }
 
@@ -89,7 +89,7 @@ object WorkerActor {
             i =>
               i.foreach{
                 m =>
-                  println(s"------------------- worker received data message with seq = ${m.seq} from ${m.sender} -------------------")
+                  println(s"------------------- ${name} received data message with seq = ${m.seq} from ${m.sender} -------------------")
                   internalQueue.add(Some(m.dataPayload))
               }
           }
@@ -98,7 +98,7 @@ object WorkerActor {
             i =>
               i.foreach{
                 m =>
-                  println(s"------------------- worker received control message with seq = ${m.seq} from ${m.sender} -------------------")
+                  println(s"------------------- ${name} received control message with seq = ${m.seq} from ${m.sender} -------------------")
                   println("ready to pause DP thread")
                   GlobalControl.promptCrash()
                   syncWithDPThread()

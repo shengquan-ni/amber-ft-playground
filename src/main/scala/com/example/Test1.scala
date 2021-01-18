@@ -7,7 +7,12 @@ object Test1 extends App{
     output =>
       output.sendControlToWorker(
         AddElementToArray("1")
-          .thenDo(SendToController(AddElementToArray("2")))
+          .thenDo(SendToController(
+            AddElementToArray("2")
+              .thenDo(SendControlToWorker(AddElementToArray("3")
+                .thenDo(PrintArray())
+              ))
+          ))
       )
       output.sendControlToWorker(AddElementToArray("4"))
       output.sendControlToWorker(PrintArray())
