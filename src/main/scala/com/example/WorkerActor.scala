@@ -77,14 +77,15 @@ object WorkerActor {
 
     def syncWithDPThread(): Future[Unit] = {
       if(isPaused){
-        //dp thread paused or pausing
-        //in this case, returning pausePromise is safe
-        //if pausePromise is already fulfilled, onSuccess call will be invoked directly
-        //if pausePromise is not fulfilled, onSuccess call will be invoked in dp thread
+        // dp thread paused or pausing
+        // returns the future so that we can chain them together to keep FIFO
         println("syncWithDPThread: dp thread paused")
         pauseFuture
       }else{
         // dp thread running
+        // current rootPausePromise is fulfilled or is being fulfilled
+        // so we need to create a new one to trigger control logic
+        // on the NEXT dp thread iteration
         println("syncWithDPThread: dp thread running, pause it")
         rootPausePromise = new Promise[Unit]()
         internalQueue.add(None)
