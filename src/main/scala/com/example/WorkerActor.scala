@@ -25,19 +25,18 @@ object WorkerActor {
 
     var controlFIFOGate:mutable.AnyRefMap[String, OrderingEnforcer[ControlMessage]] = _
     var dataFIFOGate:mutable.AnyRefMap[String, OrderingEnforcer[DataMessage]] = _
-
+    var outputChannel = new WorkerOutputChannel(parent)
     var state: MutableState =
       if(stateCheckpoint != null){
         controlFIFOGate = stateCheckpoint.controlFIFOGate
         dataFIFOGate = stateCheckpoint.dataFIFOGate
+        outputChannel.controllerSeq = stateCheckpoint.controllerSeq
         stateCheckpoint
       }else{
         controlFIFOGate = new mutable.AnyRefMap[String, OrderingEnforcer[ControlMessage]]
         dataFIFOGate = new mutable.AnyRefMap[String, OrderingEnforcer[DataMessage]]
-        new MutableState(dataFIFOGate, controlFIFOGate)
+        new MutableState(dataFIFOGate, controlFIFOGate, outputChannel.controllerSeq)
       }
-
-    var outputChannel = new WorkerOutputChannel(parent)
 
     val internalQueue = new LinkedBlockingDeque[Option[RunnableMessage[WorkerOutputChannel]]]
     val dp = Executors.newSingleThreadExecutor()
@@ -88,11 +87,11 @@ object WorkerActor {
     def recover(dataCursor:Long): Unit ={
       while(recoveryInfo.nonEmpty && recoveryInfo.head._2 == dataCursor){
         val msg = recoveryInfo.dequeue()
-        processMessage(msg._1)
+        processMessage(msg._1, true)
       }
     }
 
-    def processMessage(msg:WorkerMessage): Unit ={
+    def processMessage(msg:WorkerMessage, callingFromDP:Boolean = false): Unit ={
       msg match {
         case payload: DataMessage =>
           OrderingEnforcer.reorderMessage(dataFIFOGate, payload.sender, payload.seq, payload).foreach {
@@ -104,17 +103,21 @@ object WorkerActor {
               }
           }
         case payload: ControlMessage =>
+          if(!callingFromDP){
+            syncWithDPThread()
+          }
           OrderingEnforcer.reorderMessage(controlFIFOGate, payload.sender, payload.seq, payload).foreach {
             i =>
               i.foreach{
                 m =>
                   println(s"------------------- ${name} received control message with seq = ${m.seq} from ${m.sender} -------------------")
-                  syncWithDPThread()
-                  outputChannel.processAndLog(payload.seq, state.dataCursor)
+                  outputChannel.processAndLog(m.seq, state.dataCursor)
                   m.controlPayload.invoke(state, outputChannel)
-                  blocker.complete(null)
-                  isPaused = false
               }
+          }
+          if(!callingFromDP){
+            blocker.complete(null)
+            isPaused = false
           }
       }
     }

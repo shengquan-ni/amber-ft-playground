@@ -24,7 +24,7 @@ object ControllerActor {
     var worker: ActorRef[WorkerMessage] = context.spawn(WorkerActor("worker", context.self),"worker")
     val controlFIFOGate = new mutable.AnyRefMap[String,OrderingEnforcer[FIFOMessage]]()
     val outputChannel = new ControllerOutputChannel(worker)
-    val state:MutableState = new MutableState(null,null)
+    val state:MutableState = new MutableState(null,null,null)
     var ver = 0
 
     GlobalControl.controllerState = state
@@ -43,6 +43,8 @@ object ControllerActor {
 
 
     def handleFIFOMessage(m:FIFOMessage): Unit ={
+      println(m)
+
       OrderingEnforcer.reorderMessage(controlFIFOGate, m.sender, m.seq, m).foreach{
         i =>
           i.foreach{
@@ -67,13 +69,13 @@ object ControllerActor {
         val logs = outputChannel.logs.filter(l => l._2 >= state.dataCursor).clone()
         worker = context.spawnAnonymous(WorkerActor(s"worker(recovered version = $ver)", context.self, logs, state))
         outputChannel.worker = worker
-        outputChannel.resendUnLoggedControlMessages()
         outputChannel.resendDataMessages(state.dataCursor)
+        outputChannel.resendUnLoggedControlMessages()
       }else{
         worker = context.spawnAnonymous(WorkerActor(s"worker(recovered version = $ver)", context.self, outputChannel.logs, null))
         outputChannel.worker = worker
-        outputChannel.resendUnLoggedControlMessages()
         outputChannel.resendDataMessages(0)
+        outputChannel.resendUnLoggedControlMessages()
       }
     }
 
