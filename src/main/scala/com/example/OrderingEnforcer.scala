@@ -23,7 +23,7 @@ object OrderingEnforcer {
 }
 
 /* The abstracted FIFO/exactly-once logic */
-class OrderingEnforcer[T: ClassTag] {
+class OrderingEnforcer[T: ClassTag] extends Serializable {
 
   var current = 0L
   val ofoMap = new mutable.LongMap[T]

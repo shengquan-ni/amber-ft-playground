@@ -24,7 +24,6 @@ object GlobalControl {
         println("controller Log: ")
         println(s"[${controllerOutput.logs.mkString("\n")}]")
         promptRecovery()
-        throw new RuntimeException("worker crashed")
       case other =>
         //skip
     }
@@ -42,8 +41,10 @@ object GlobalControl {
       case "n" =>
         //skip
       case other =>
-        println("triggering recovery")
-        controllerRef ! RecoverWorker()
+        readLine("enter checkpoint file path if you want to recover from checkpoint.").toLowerCase match{
+          case path =>
+            controllerRef ! RecoverWorker(path)
+        }
     }
   }
 

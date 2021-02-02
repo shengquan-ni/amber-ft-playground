@@ -1,5 +1,6 @@
 package com.example
 
+import java.io.{FileInputStream, ObjectInputStream}
 import java.util.concurrent.{CompletableFuture, Executors, LinkedBlockingDeque}
 
 import akka.actor.typed.{ActorRef, Behavior}
@@ -15,29 +16,36 @@ object WorkerActor {
   final case class DataMessage(sender:String, seq:Long, dataPayload: RunnableMessage[WorkerOutputChannel]) extends WorkerMessage
   final case class ControlMessage(sender:String, seq:Long, controlPayload: RunnableMessage[WorkerOutputChannel]) extends WorkerMessage
 
-  def apply(name:String, parent:ActorRef[ControllerMessage], recoveryInfo:mutable.Queue[(WorkerMessage, Long)] = mutable.Queue.empty): Behavior[WorkerMessage] =
-    Behaviors.setup(context => new WorkerBehavior(name, parent, recoveryInfo, context))
+  def apply(name:String, parent:ActorRef[ControllerMessage], recoveryInfo:mutable.Queue[(WorkerMessage, Long)] = mutable.Queue.empty, stateCheckpoint:MutableState = null): Behavior[WorkerMessage] =
+    Behaviors.setup(context => new WorkerBehavior(name, parent, recoveryInfo, context, stateCheckpoint))
 
-  class WorkerBehavior(name:String, parent:ActorRef[ControllerMessage], recoveryInfo:mutable.Queue[(WorkerMessage, Long)], context: ActorContext[WorkerMessage]) extends AbstractBehavior[WorkerMessage](context) {
+  class WorkerBehavior(name:String, parent:ActorRef[ControllerMessage], recoveryInfo:mutable.Queue[(WorkerMessage, Long)], context: ActorContext[WorkerMessage], stateCheckpoint:MutableState = null) extends AbstractBehavior[WorkerMessage](context) {
 
     def funToRunnable(fun: () => Unit): Runnable = new Runnable() { def run(): Unit = fun() }
 
-    var state = new MutableState()
-    var outputChannel = new WorkerOutputChannel(parent)
+    var controlFIFOGate:mutable.AnyRefMap[String, OrderingEnforcer[ControlMessage]] = _
+    var dataFIFOGate:mutable.AnyRefMap[String, OrderingEnforcer[DataMessage]] = _
 
-    val controlFIFOGate = new mutable.AnyRefMap[String, OrderingEnforcer[ControlMessage]]
-    val dataFIFOGate = new mutable.AnyRefMap[String, OrderingEnforcer[DataMessage]]
+    var state: MutableState =
+      if(stateCheckpoint != null){
+        controlFIFOGate = stateCheckpoint.controlFIFOGate
+        dataFIFOGate = stateCheckpoint.dataFIFOGate
+        stateCheckpoint
+      }else{
+        controlFIFOGate = new mutable.AnyRefMap[String, OrderingEnforcer[ControlMessage]]
+        dataFIFOGate = new mutable.AnyRefMap[String, OrderingEnforcer[DataMessage]]
+        new MutableState(dataFIFOGate, controlFIFOGate)
+      }
+
+    var outputChannel = new WorkerOutputChannel(parent)
 
     val internalQueue = new LinkedBlockingDeque[Option[RunnableMessage[WorkerOutputChannel]]]
     val dp = Executors.newSingleThreadExecutor()
     var blocker:CompletableFuture[Void] = null
     var isPaused = false
-    var dataCursor = 0L
 
     GlobalControl.workerState = state
     GlobalControl.workerOutput = outputChannel
-
-    recover(0)
 
     dp.submit{
       new Runnable() {
@@ -46,10 +54,10 @@ object WorkerActor {
             while(true){
               val msg = internalQueue.take()
               if(msg.isDefined){
-                dataCursor += 1
+                state.dataCursor += 1
                 msg.get.invoke(state, outputChannel)
               }
-              recover(dataCursor)
+              recover(state.dataCursor)
               if(isPaused){
                 blocker = new CompletableFuture[Void]
                 blocker.get
@@ -63,6 +71,8 @@ object WorkerActor {
       }
     }
 
+    recover(state.dataCursor)
+
     override def onMessage(message: WorkerMessage): Behavior[WorkerMessage] = {
       processMessage(message)
       Behaviors.same
@@ -71,7 +81,7 @@ object WorkerActor {
     def syncWithDPThread(): Unit = {
       isPaused = true
       internalQueue.add(None)
-      while(blocker != null && blocker.isDone){}
+      while(blocker == null || blocker.isDone){}
     }
 
 
@@ -99,18 +109,11 @@ object WorkerActor {
               i.foreach{
                 m =>
                   println(s"------------------- ${name} received control message with seq = ${m.seq} from ${m.sender} -------------------")
-                  println("ready to pause DP thread")
-                  GlobalControl.promptCrash()
                   syncWithDPThread()
-                  println("ready to send log to controller")
-                  GlobalControl.promptCrash()
-                  outputChannel.processAndLog(payload.seq, dataCursor)
-                  println("ready to execute message")
-                  GlobalControl.promptCrash()
+                  outputChannel.processAndLog(payload.seq, state.dataCursor)
                   m.controlPayload.invoke(state, outputChannel)
                   blocker.complete(null)
-                  println("executed message")
-                  GlobalControl.promptCrash()
+                  isPaused = false
               }
           }
       }

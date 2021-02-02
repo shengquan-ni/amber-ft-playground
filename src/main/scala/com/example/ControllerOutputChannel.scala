@@ -39,8 +39,8 @@ class ControllerOutputChannel(var worker:ActorRef[WorkerMessage]) {
   }
 
 
-  def resendDataMessages(): Unit ={
-    dataMessages.foreach{
+  def resendDataMessages(dataCursor:Long): Unit ={
+    dataMessages.drop(dataCursor.toInt).foreach{
       msg =>
         worker ! msg
     }
