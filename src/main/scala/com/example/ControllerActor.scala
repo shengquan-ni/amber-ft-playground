@@ -62,21 +62,30 @@ object ControllerActor {
     def recover(checkpointPath:String): Unit ={
       ver += 1
       context.stop(worker)
-      if(checkpointPath.nonEmpty){
+      if(checkpointPath.nonEmpty && new java.io.File(checkpointPath).exists()){
         val ois = new ObjectInputStream(new FileInputStream(checkpointPath))
-        val state = ois.readObject.asInstanceOf[MutableState]
-        ois.close()
-        val logs = outputChannel.logs.filter(l => l._2 >= state.dataCursor).clone()
-        worker = context.spawnAnonymous(WorkerActor(s"worker(recovered version = $ver)", context.self, logs, state))
-        outputChannel.worker = worker
-        outputChannel.resendDataMessages(state.dataCursor)
-        outputChannel.resendUnLoggedControlMessages()
+        try{
+          val state = ois.readObject.asInstanceOf[MutableState]
+          ois.close()
+          val logs = outputChannel.logs.filter(l => l._2 >= state.dataCursor).clone()
+          worker = context.spawnAnonymous(WorkerActor(s"worker(recovered version = $ver with checkpoint)", context.self, logs, state))
+          outputChannel.worker = worker
+          outputChannel.resendDataMessages(state.dataCursor)
+          outputChannel.resendUnLoggedControlMessages()
+        }catch{
+          case e:Throwable =>
+            normalRecovery()
+        }
       }else{
-        worker = context.spawnAnonymous(WorkerActor(s"worker(recovered version = $ver)", context.self, outputChannel.logs, null))
-        outputChannel.worker = worker
-        outputChannel.resendDataMessages(0)
-        outputChannel.resendUnLoggedControlMessages()
+        normalRecovery()
       }
+    }
+
+    def normalRecovery(): Unit ={
+      worker = context.spawnAnonymous(WorkerActor(s"worker(recovered version = $ver)", context.self, outputChannel.logs, null))
+      outputChannel.worker = worker
+      outputChannel.resendDataMessages(0)
+      outputChannel.resendUnLoggedControlMessages()
     }
 
 
