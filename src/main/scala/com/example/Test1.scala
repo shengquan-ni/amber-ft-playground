@@ -25,7 +25,7 @@ object Test1 extends App{
       output.sendControlToWorker(PrintArray())
       Thread.sleep(Random.between(1,30))
       println(">>>>>>>>>>>>>>>>>>>>>>>>> start recovery >>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
-      GlobalControl.controllerRef ! RecoverWorker("F:\\Amber2.0\\amber-ft-playground\\.\\checkpoints\\checkpoint1.tmp")
+      GlobalControl.controllerRef ! RecoverWorker("./checkpoints/checkpoint1.tmp")
       Thread.sleep(10000)
   }
 
