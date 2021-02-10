@@ -4,40 +4,54 @@ import java.util.concurrent.{CompletableFuture, Executors, LinkedBlockingDeque}
 
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{AbstractBehavior, ActorContext, Behaviors}
-import com.example.ControllerActor.{ControllerMessage, Log}
 
 import scala.collection.mutable
 
 object WorkerActor {
 
-  sealed trait WorkerMessage extends FIFOMessage
+  sealed trait WorkerMessage
 
-  final case class DataMessage(sender:String, seq:Long, dataPayload: RunnableMessage[WorkerOutputChannel]) extends WorkerMessage
-  final case class ControlMessage(sender:String, seq:Long, controlPayload: RunnableMessage[WorkerOutputChannel]) extends WorkerMessage
+  final case class ResendControl(to:String, fromSeq:Long = -1) extends WorkerMessage
+  final case class ResendData(to:String) extends WorkerMessage
+  final case class CleanUp() extends WorkerMessage
 
-  def apply(name:String, parent:ActorRef[ControllerMessage], recoveryInfo:mutable.Queue[(WorkerMessage, Long)] = mutable.Queue.empty): Behavior[WorkerMessage] =
-    Behaviors.setup(context => new WorkerBehavior(name, parent, recoveryInfo, context))
+  final case class DataInput(sender:String, dataPayload:RunnableMessage)
+  final case class DataMessage(sender:String, seq:Long, dataPayload: RunnableMessage) extends WorkerMessage with FIFOMessage
+  final case class ControlMessage(sender:String, seq:Long, controlPayload: RunnableMessage) extends WorkerMessage with FIFOMessage
 
-  class WorkerBehavior(name:String, parent:ActorRef[ControllerMessage], recoveryInfo:mutable.Queue[(WorkerMessage, Long)], context: ActorContext[WorkerMessage]) extends AbstractBehavior[WorkerMessage](context) {
+  def apply(name:String, storageModule: StorageModule[ControlMessage], dataToSend:Seq[(RunnableMessage, String)], controlToSend:Seq[(RunnableMessage, String)], recoverVersion:Long = 0L): Behavior[WorkerMessage] =
+    Behaviors.setup(context => new WorkerBehavior(name, storageModule, dataToSend, controlToSend,recoverVersion , context))
+
+  class WorkerBehavior(name:String, storageModule: StorageModule[ControlMessage], dataToSend:Seq[(RunnableMessage, String)], controlToSend:Seq[(RunnableMessage, String)],recoverVersion:Long, context: ActorContext[WorkerMessage]) extends AbstractBehavior[WorkerMessage](context) {
 
     def funToRunnable(fun: () => Unit): Runnable = new Runnable() { def run(): Unit = fun() }
 
     var state = new MutableState()
-    var outputChannel = new WorkerOutputChannel(parent)
+    val outputModule:OutputModule = new OutputModule(name,storageModule)
 
     val controlFIFOGate = new mutable.AnyRefMap[String, OrderingEnforcer[ControlMessage]]
     val dataFIFOGate = new mutable.AnyRefMap[String, OrderingEnforcer[DataMessage]]
 
-    val internalQueue = new LinkedBlockingDeque[Option[RunnableMessage[WorkerOutputChannel]]]
+    val internalQueue = new LinkedBlockingDeque[Option[DataInput]]
     val dp = Executors.newSingleThreadExecutor()
     var blocker:CompletableFuture[Void] = null
     var isPaused = false
-    var dataCursor = 0L
+    val recoveryModule = new RecoveryModule[ControlMessage, DataInput](name, storageModule)
 
-    GlobalControl.workerState = state
-    GlobalControl.workerOutput = outputChannel
+    dataToSend.foreach{
+      x => outputModule.sendDataTo(x._2, x._1)
+    }
 
-    recover(0)
+    controlToSend.foreach{
+      x => outputModule.sendControlTo(x._2, x._1)
+    }
+
+    if(recoveryModule.isRecovering){
+      recoveryModule.outputControlMessages().foreach{
+        x => processMessage(x)
+      }
+      GlobalControl.resendDataMessagesFor(name)
+    }
 
     dp.submit{
       new Runnable() {
@@ -46,10 +60,16 @@ object WorkerActor {
             while(true){
               val msg = internalQueue.take()
               if(msg.isDefined){
-                dataCursor += 1
-                msg.get.invoke(state, outputChannel)
+                recoveryModule.feedInData(msg.get, msg.get.sender).foreach{
+                  case Left(value) =>
+                    processMessage(value, true)
+                  case Right(value) =>
+                    value.dataPayload.invoke(state, outputModule, context)
+                }
+                recoveryModule.dequeueAllBlockedMessages.foreach{
+                  x => internalQueue.add(Option(x))
+                }
               }
-              recover(dataCursor)
               if(isPaused){
                 blocker = new CompletableFuture[Void]
                 blocker.get
@@ -68,29 +88,33 @@ object WorkerActor {
       Behaviors.same
     }
 
-    def syncWithDPThread(): Unit = {
-      isPaused = true
-      internalQueue.add(None)
-      while(blocker != null && blocker.isDone){}
-    }
-
-
-    def recover(dataCursor:Long): Unit ={
-      while(recoveryInfo.nonEmpty && recoveryInfo.head._2 == dataCursor){
-        val msg = recoveryInfo.dequeue()
-        processMessage(msg._1)
+    def syncWithDPThread(fromDPThread:Boolean): Unit = {
+      if(!fromDPThread){
+        isPaused = true
+        internalQueue.add(None)
+        while(blocker != null && blocker.isDone){}
       }
     }
 
-    def processMessage(msg:WorkerMessage): Unit ={
+
+    def processMessage(msg:WorkerMessage, fromDPThread:Boolean = false): Unit ={
+      val printName = if(recoverVersion!= 0)name+s"(recovered version = ${recoverVersion})" else name
       msg match {
+        case ResendControl(to, fromSeq) =>
+          outputModule.idMapping(to) = GlobalControl.getRef(to)
+          outputModule.sendOldControl(to, fromSeq)
+        case ResendData(to) =>
+          outputModule.idMapping(to) = GlobalControl.getRef(to)
+          outputModule.sendOldData(to)
+        case CleanUp() =>
+          storageModule.clean()
         case payload: DataMessage =>
           OrderingEnforcer.reorderMessage(dataFIFOGate, payload.sender, payload.seq, payload).foreach {
             i =>
               i.foreach{
                 m =>
-                  println(s"------------------- ${name} received data message with seq = ${m.seq} from ${m.sender} -------------------")
-                  internalQueue.add(Some(m.dataPayload))
+                  println(s"------------------- ${printName} received data message with seq = ${m.seq} from ${m.sender} -------------------")
+                  internalQueue.add(Some(DataInput(payload.sender, m.dataPayload)))
               }
           }
         case payload: ControlMessage =>
@@ -98,19 +122,13 @@ object WorkerActor {
             i =>
               i.foreach{
                 m =>
-                  println(s"------------------- ${name} received control message with seq = ${m.seq} from ${m.sender} -------------------")
-                  println("ready to pause DP thread")
-                  GlobalControl.promptCrash()
-                  syncWithDPThread()
-                  println("ready to send log to controller")
-                  GlobalControl.promptCrash()
-                  outputChannel.processAndLog(payload.seq, dataCursor)
-                  println("ready to execute message")
-                  GlobalControl.promptCrash()
-                  m.controlPayload.invoke(state, outputChannel)
-                  blocker.complete(null)
-                  println("executed message")
-                  GlobalControl.promptCrash()
+                  println(s"------------------- ${printName} received control message with seq = ${m.seq} from ${m.sender} -------------------")
+                  syncWithDPThread(fromDPThread)
+                  recoveryModule.persistControlMessage(payload)
+                  m.controlPayload.invoke(state, outputModule, context)
+                  if(blocker != null) {
+                    blocker.complete(null)
+                  }
               }
           }
       }

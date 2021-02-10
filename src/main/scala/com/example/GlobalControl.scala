@@ -1,49 +1,76 @@
 package com.example
 
-import java.util.concurrent.{CompletableFuture, Executors}
 
-import akka.actor.typed.ActorRef
-import com.example.ControllerActor.{ControllerMessage, Log, RecoverWorker}
+import akka.actor.Kill
+import akka.actor.typed.scaladsl.AskPattern._
+import akka.actor.typed.scaladsl.Behaviors
+import akka.actor.typed.{ActorRef, ActorSystem, RecipientRef}
+import akka.util.Timeout
+import com.example.GuardianActor.{CreateWorker, GuardianMessage, RecoverForWorker}
+import com.example.WorkerActor.{CleanUp, ControlMessage, ResendControl, ResendData, WorkerMessage}
 
 import scala.collection.mutable
-import scala.io.StdIn.readLine
+import scala.concurrent.Await
+import scala.concurrent.duration.DurationInt
+
 
 object GlobalControl {
 
-  var controllerRef:ActorRef[ControllerMessage] = _
-  var controllerState:MutableState = _
-  var workerState:MutableState = _
-  var controllerOutput:ControllerOutputChannel = _
-  var workerOutput:WorkerOutputChannel = _
 
-  def promptCrash(): Unit ={
-    readLine("do you want to simulate a crash on worker? (y/N)").toLowerCase match{
-      case "y" =>
-        printState(controllerState, "controller")
-        printState(workerState, "worker")
-        println("controller Log: ")
-        println(s"[${controllerOutput.logs.mkString("\n")}]")
-        promptRecovery()
-        throw new RuntimeException("worker crashed")
-      case other =>
-        //skip
+  def SystemActor(): Behaviors.Receive[Any] = {
+    Behaviors.receiveMessage { message =>
+      Behaviors.same
     }
   }
 
-  def printState(state:MutableState, name:String):Unit ={
-    println(s"$name state: \n" +
-      s"arrayState = ${state.arrayState.mkString(",")}\n"
-    )
+
+  private val refMap = mutable.HashMap[String, ActorRef[WorkerMessage]]()
+
+  private var sys: ActorSystem[GuardianMessage] = _
+
+  private var systemActor:RecipientRef[GuardianMessage] = _
+
+  implicit val timeout: Timeout = 3.seconds
+  // implicit ActorSystem in scope
+  implicit lazy val system: ActorSystem[_] = sys
+
+  // the response callback will be executed on this execution context
+  implicit lazy val ec = system.executionContext
+
+  def getRef(name:String):ActorRef[WorkerMessage] = refMap(name)
+
+  def startRecoverFor(name:String): Unit ={
+    val ref = systemActor.ask(replyTo = ref => RecoverForWorker(name, ref))
+    refMap(name) = Await.result(ref,5.seconds)
   }
 
+  def init(): Unit ={
+    sys = ActorSystem[GuardianMessage](GuardianActor(), "ft-system")
+    systemActor = sys.ref
+  }
 
-  def promptRecovery(): Unit ={
-    readLine("do you want to recover worker? (Y/n)").toLowerCase match{
-      case "n" =>
-        //skip
-      case other =>
-        println("triggering recovery")
-        controllerRef ! RecoverWorker()
+  def createWorker(name:String, dataToSend:Seq[(RunnableMessage, String)] = Seq.empty, controlToSend:Seq[(RunnableMessage, String)] = Seq.empty): Unit ={
+    val ref = systemActor.ask(replyTo = ref => CreateWorker(name, dataToSend, controlToSend, ref))
+    refMap(name) = Await.result(ref,5.seconds)
+  }
+
+  def shutdown(): Unit ={
+    refMap.values.foreach{
+      x => x ! CleanUp()
+    }
+    sys.terminate()
+    sys.getWhenTerminated.toCompletableFuture.get()
+  }
+
+  def resendDataMessagesFor(name:String): Unit ={
+    refMap.values.foreach{
+      x => x ! ResendData(name)
+    }
+  }
+
+  def resendControlMessagesFor(name:String): Unit ={
+    refMap.values.foreach{
+      x => x ! ResendControl(name)
     }
   }
 
