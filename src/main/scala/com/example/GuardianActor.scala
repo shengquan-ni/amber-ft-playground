@@ -41,7 +41,7 @@ class GuardianActor(context: ActorContext[GuardianMessage]) extends AbstractBeha
         context.stop(GlobalControl.getRef(name))
         recoveredVersion(name)+=1
         val (d,c) = messageFromOutside(name)
-        val newRef = context.spawnAnonymous(WorkerActor(name,new LocalDiskStorage(name),d , c))
+        val newRef = context.spawnAnonymous(WorkerActor(name,new LocalDiskStorage(name),d , c, recoveredVersion(name)))
         ref ! newRef
     }
     Behaviors.same

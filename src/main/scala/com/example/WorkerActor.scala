@@ -6,6 +6,7 @@ import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{AbstractBehavior, ActorContext, Behaviors}
 
 import scala.collection.mutable
+import scala.util.Random
 
 object WorkerActor {
 
@@ -36,7 +37,7 @@ object WorkerActor {
     val dp = Executors.newSingleThreadExecutor()
     var blocker:CompletableFuture[Void] = null
     var isPaused = false
-    val recoveryModule = new RecoveryModule[ControlMessage, DataInput](name, storageModule)
+    val recoveryModule = new RecoveryModule[ControlMessage, DataInput](name, recoverVersion, controlFIFOGate, storageModule)
 
     dataToSend.foreach{
       x => outputModule.sendDataTo(x._2, x._1)
@@ -50,6 +51,7 @@ object WorkerActor {
       recoveryModule.outputControlMessages().foreach{
         x => processMessage(x)
       }
+      Thread.sleep(1000)
       GlobalControl.resendDataMessagesFor(name)
     }
 
@@ -60,14 +62,18 @@ object WorkerActor {
             while(true){
               val msg = internalQueue.take()
               if(msg.isDefined){
+                var unblockMessages = false
                 recoveryModule.feedInData(msg.get, msg.get.sender).foreach{
                   case Left(value) =>
-                    processMessage(value, true)
+                    processControlMessage(value, true)
+                    unblockMessages = true
                   case Right(value) =>
                     value.dataPayload.invoke(state, outputModule, context)
                 }
-                recoveryModule.dequeueAllBlockedMessages.foreach{
-                  x => internalQueue.add(Option(x))
+                if(unblockMessages){
+                  recoveryModule.dequeueAllBlockedMessages.reverse.foreach{
+                    x => internalQueue.addFirst(Option(x))
+                  }
                 }
               }
               if(isPaused){
@@ -97,14 +103,29 @@ object WorkerActor {
     }
 
 
-    def processMessage(msg:WorkerMessage, fromDPThread:Boolean = false): Unit ={
+    def processControlMessage(msg:ControlMessage, fromDPThread:Boolean): Unit ={
+      val printName = if(recoverVersion!= 0)name+s"(recovered version = ${recoverVersion})" else name
+      println(s"------------------- ${printName} received control message with seq = ${msg.seq} from ${msg.sender} -------------------")
+      syncWithDPThread(fromDPThread)
+      recoveryModule.persistControlMessage(msg)
+      msg.controlPayload.invoke(state, outputModule, context)
+      if(blocker != null) {
+        blocker.complete(null)
+      }
+    }
+
+
+    def processMessage(msg:WorkerMessage): Unit ={
+      Thread.sleep(Random.between(10,500))
       val printName = if(recoverVersion!= 0)name+s"(recovered version = ${recoverVersion})" else name
       msg match {
         case ResendControl(to, fromSeq) =>
           outputModule.idMapping(to) = GlobalControl.getRef(to)
+          println("start resending control")
           outputModule.sendOldControl(to, fromSeq)
         case ResendData(to) =>
           outputModule.idMapping(to) = GlobalControl.getRef(to)
+          println("start resending data")
           outputModule.sendOldData(to)
         case CleanUp() =>
           storageModule.clean()
@@ -121,14 +142,7 @@ object WorkerActor {
           OrderingEnforcer.reorderMessage(controlFIFOGate, payload.sender, payload.seq, payload).foreach {
             i =>
               i.foreach{
-                m =>
-                  println(s"------------------- ${printName} received control message with seq = ${m.seq} from ${m.sender} -------------------")
-                  syncWithDPThread(fromDPThread)
-                  recoveryModule.persistControlMessage(payload)
-                  m.controlPayload.invoke(state, outputModule, context)
-                  if(blocker != null) {
-                    blocker.complete(null)
-                  }
+                m => processControlMessage(m,false)
               }
           }
       }

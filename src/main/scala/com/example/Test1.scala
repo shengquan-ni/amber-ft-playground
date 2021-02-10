@@ -1,6 +1,6 @@
 package com.example
 
-import com.example.messages.{AddElementToArray, PrintArray, SendData}
+import com.example.messages.{AddElementToArray, PrintArray, SendData, SendControl}
 
 
 object Test1 extends App{
@@ -9,27 +9,29 @@ object Test1 extends App{
   GlobalControl.createWorker("A", Seq(
     (AddElementToArray(1),"B"),
     (AddElementToArray(2),"B"),
+    (AddElementToArray(3),"B"),
+    (AddElementToArray(4),"B"),
+    (AddElementToArray(5),"B"),
     (PrintArray(),"B")
   ),Seq(
-    (SendData("A", AddElementToArray(3)), "B"),
-      (SendData("A", AddElementToArray(4)), "B"),
-      (SendData("A", AddElementToArray(5)), "B"),
-      (SendData("A", AddElementToArray(6)), "B"),
-    (SendData("A", PrintArray()), "B"),
+    (SendControl("A", AddElementToArray(3)), "B"),
+      (SendControl("B", AddElementToArray(4)), "B"),
+      (SendControl("A", AddElementToArray(5)), "B"),
+      (SendControl("B", AddElementToArray(6)), "B")
   ))
   GlobalControl.createWorker("C", Seq(
-    (AddElementToArray(1),"B"),
-    (AddElementToArray(2),"B"),
-    (PrintArray(),"B")
+    (AddElementToArray(10),"B"),
+    (AddElementToArray(11),"B"),
+    (PrintArray(),"B"),
+    (PrintArray(),"A")
   ),Seq(
-    (SendData("C", AddElementToArray(3)), "B"),
-    (SendData("C", AddElementToArray(4)), "B"),
-    (SendData("C", AddElementToArray(5)), "B"),
-    (SendData("C", AddElementToArray(6)), "B"),
-    (SendData("C", PrintArray()), "B"),
+    (SendControl("C", AddElementToArray(3)), "B"),
+    (SendControl("A", AddElementToArray(4)), "A"),
+    (SendControl("A", AddElementToArray(5)), "B"),
+    (SendControl("A", AddElementToArray(6)), "B")
   ))
-  Thread.sleep(1000)
+  Thread.sleep(3000)
   GlobalControl.startRecoverFor("B")
-  Thread.sleep(10000)
+  Thread.sleep(30000)
   GlobalControl.shutdown()
 }

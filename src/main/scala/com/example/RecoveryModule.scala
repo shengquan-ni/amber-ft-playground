@@ -1,6 +1,7 @@
 package com.example
 
 import com.example.RecoveryModule.RecoverableMessage
+import com.example.WorkerActor.ControlMessage
 
 import scala.collection.mutable
 
@@ -9,12 +10,27 @@ object RecoveryModule{
 
 }
 
-class RecoveryModule[T, U](name:String, storageModule:StorageModule[T]) {
+class RecoveryModule[T <: ControlMessage, U](name:String, version:Long, fifoGate:mutable.Map[String,OrderingEnforcer[ControlMessage]], storageModule:StorageModule[T]) {
 
   val persistedControlMessages:mutable.Queue[RecoverableMessage[T]] = mutable.Queue(storageModule.load():_*)
 
   println("recovery: previous controls: \n"+persistedControlMessages.mkString("\n"))
   storageModule.clean()
+  if(isRecovering){
+
+    persistedControlMessages.foreach{
+      x => if(!fifoGate.contains(x.payload.sender)){
+        fifoGate(x.payload.sender) = new OrderingEnforcer[ControlMessage]
+      }
+        fifoGate(x.payload.sender).current = x.payload.seq+1
+    }
+
+    if(persistedControlMessages.isEmpty){
+      GlobalControl.resendControlMessagesFor(name)
+    }
+  }
+
+
 
   val blockedMessages: mutable.Queue[U] = mutable.Queue.empty
   val seqs:mutable.Map[String,Long] = mutable.HashMap.empty
@@ -55,6 +71,7 @@ class RecoveryModule[T, U](name:String, storageModule:StorageModule[T]) {
     }else{
       seqs(k) = 1
     }
+    println(s"now seq = ${seqs.mkString(",")}")
   }
 
   def persistControlMessage(message:T): Unit ={
@@ -62,6 +79,6 @@ class RecoveryModule[T, U](name:String, storageModule:StorageModule[T]) {
     println(s"persisting $recoverableMessage")
     storageModule.persist(recoverableMessage)
   }
-  def isRecovering: Boolean = persistedControlMessages.nonEmpty
+  def isRecovering: Boolean = version != 0
 
 }
