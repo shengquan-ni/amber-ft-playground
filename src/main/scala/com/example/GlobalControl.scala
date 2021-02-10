@@ -7,7 +7,7 @@ import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.{ActorRef, ActorSystem, RecipientRef}
 import akka.util.Timeout
 import com.example.GuardianActor.{CreateWorker, GuardianMessage, RecoverForWorker}
-import com.example.WorkerActor.{CleanUp, ControlMessage, ResendControl, ResendData, WorkerMessage}
+import com.example.WorkerActor.{CleanUp, ControlMessage, PrintStates, ResendControl, ResendData, WorkerMessage}
 
 import scala.collection.mutable
 import scala.concurrent.Await
@@ -71,6 +71,13 @@ object GlobalControl {
   def resendControlMessagesFor(name:String): Unit ={
     refMap.values.foreach{
       x => x ! ResendControl(name)
+    }
+  }
+
+
+  def printStates(): Unit ={
+    refMap.values.foreach{
+      x => x ! PrintStates()
     }
   }
 

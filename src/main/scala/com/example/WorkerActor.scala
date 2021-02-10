@@ -12,6 +12,7 @@ object WorkerActor {
 
   sealed trait WorkerMessage
 
+  final case class PrintStates() extends WorkerMessage
   final case class ResendControl(to:String, fromSeq:Long = -1) extends WorkerMessage
   final case class ResendData(to:String) extends WorkerMessage
   final case class CleanUp() extends WorkerMessage
@@ -116,9 +117,10 @@ object WorkerActor {
 
 
     def processMessage(msg:WorkerMessage): Unit ={
-      Thread.sleep(Random.between(10,500))
       val printName = if(recoverVersion!= 0)name+s"(recovered version = ${recoverVersion})" else name
       msg match {
+        case PrintStates() =>
+          println(s"$name: \n fifoControlGate: ${controlFIFOGate.mkString(",")} \n fifoDataGate: ${dataFIFOGate.mkString(",")} \n state: ${state.arrayState.mkString(",")} \n output control seqs: ${outputModule.controlSeqs.mkString(",")} \n output data seqs: ${outputModule.dataSeqs.mkString(",")}")
         case ResendControl(to, fromSeq) =>
           outputModule.idMapping(to) = GlobalControl.getRef(to)
           println("start resending control")
@@ -130,6 +132,7 @@ object WorkerActor {
         case CleanUp() =>
           storageModule.clean()
         case payload: DataMessage =>
+          Thread.sleep(Random.between(10,500))
           OrderingEnforcer.reorderMessage(dataFIFOGate, payload.sender, payload.seq, payload).foreach {
             i =>
               i.foreach{
@@ -139,6 +142,7 @@ object WorkerActor {
               }
           }
         case payload: ControlMessage =>
+          Thread.sleep(Random.between(10,500))
           OrderingEnforcer.reorderMessage(controlFIFOGate, payload.sender, payload.seq, payload).foreach {
             i =>
               i.foreach{

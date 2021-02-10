@@ -30,8 +30,18 @@ object Test1 extends App{
     (SendData("A", AddElementToArray(5)), "B"),
     (SendControl("A", AddElementToArray(6)), "B")
   ))
+
   Thread.sleep(10000)
+  GlobalControl.printStates()
   GlobalControl.startRecoverFor("B")
+  Thread.sleep(10000)
+  GlobalControl.printStates()
+  GlobalControl.startRecoverFor("A")
+  Thread.sleep(10000)
+  GlobalControl.printStates()
+  GlobalControl.startRecoverFor("C")
   Thread.sleep(30000)
+  GlobalControl.printStates()
+  Thread.sleep(5000)
   GlobalControl.shutdown()
 }

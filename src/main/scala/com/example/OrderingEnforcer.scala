@@ -28,6 +28,10 @@ class OrderingEnforcer[T: ClassTag] {
   var current = 0L
   val ofoMap = new mutable.LongMap[T]
 
+  override def toString: String = {
+    s"[cur = $current out-of-order = ${ofoMap.size}]"
+  }
+
   def isDuplicated(sequenceNumber: Long): Boolean =
     sequenceNumber < current || ofoMap.contains(sequenceNumber)
 
