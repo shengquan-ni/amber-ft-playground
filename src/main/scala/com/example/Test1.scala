@@ -15,8 +15,8 @@ object Test1 extends App{
     (PrintArray(),"B")
   ),Seq(
     (SendControl("A", AddElementToArray(3)), "B"),
-      (SendControl("B", AddElementToArray(4)), "B"),
-      (SendControl("A", AddElementToArray(5)), "B"),
+      (SendData("B", AddElementToArray(4)), "B"),
+      (SendData("A", AddElementToArray(5)), "B"),
       (SendControl("B", AddElementToArray(6)), "B")
   ))
   GlobalControl.createWorker("C", Seq(
@@ -25,12 +25,12 @@ object Test1 extends App{
     (PrintArray(),"B"),
     (PrintArray(),"A")
   ),Seq(
-    (SendControl("C", AddElementToArray(3)), "B"),
-    (SendControl("A", AddElementToArray(4)), "A"),
-    (SendControl("A", AddElementToArray(5)), "B"),
+    (SendData("C", AddElementToArray(3)), "B"),
+    (SendData("A", AddElementToArray(4)), "A"),
+    (SendData("A", AddElementToArray(5)), "B"),
     (SendControl("A", AddElementToArray(6)), "B")
   ))
-  Thread.sleep(3000)
+  Thread.sleep(10000)
   GlobalControl.startRecoverFor("B")
   Thread.sleep(30000)
   GlobalControl.shutdown()
