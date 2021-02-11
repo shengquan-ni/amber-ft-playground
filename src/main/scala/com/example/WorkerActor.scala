@@ -39,6 +39,7 @@ object WorkerActor {
     var blocker:CompletableFuture[Void] = null
     var isPaused = false
     val recoveryModule = new RecoveryModule[ControlMessage, DataInput](name, recoverVersion, controlFIFOGate, storageModule)
+    val stashedMessages = mutable.Queue[ControlMessage]()
 
     dataToSend.foreach{
       x => outputModule.sendDataTo(x._2, x._1)
@@ -48,7 +49,7 @@ object WorkerActor {
       x => outputModule.sendControlTo(x._2, x._1)
     }
 
-    if(recoveryModule.isRecovering){
+    if(recoverVersion != 0){
       recoveryModule.outputControlMessages().foreach{
         x => processMessage(x)
       }
@@ -74,6 +75,9 @@ object WorkerActor {
                 if(unblockMessages){
                   recoveryModule.dequeueAllBlockedMessages.reverse.foreach{
                     x => internalQueue.addFirst(Option(x))
+                  }
+                  if(!recoveryModule.isRecovering){
+                    stashedMessages.foreach(processControlMessage(_,true))
                   }
                 }
               }
@@ -104,14 +108,20 @@ object WorkerActor {
     }
 
 
-    def processControlMessage(msg:ControlMessage, fromDPThread:Boolean): Unit ={
-      val printName = if(recoverVersion!= 0)name+s"(recovered version = ${recoverVersion})" else name
-      println(s"------------------- ${printName} received control message with seq = ${msg.seq} from ${msg.sender} -------------------")
-      syncWithDPThread(fromDPThread)
-      recoveryModule.persistControlMessage(msg)
-      msg.controlPayload.invoke(state, outputModule, context)
-      if(blocker != null) {
-        blocker.complete(null)
+    def processControlMessage(payload:ControlMessage, fromDPThread:Boolean): Unit ={
+      OrderingEnforcer.reorderMessage(controlFIFOGate, payload.sender, payload.seq, payload).foreach {
+        i =>
+          i.foreach{
+            m =>
+              val printName = if(recoverVersion!= 0)name+s"(recovered version = ${recoverVersion})" else name
+              println(s"------------------- ${printName} received control message with seq = ${m.seq} from ${m.sender} -------------------")
+              syncWithDPThread(fromDPThread)
+              recoveryModule.persistControlMessage(m)
+              m.controlPayload.invoke(state, outputModule, context)
+              if(blocker != null) {
+                blocker.complete(null)
+              }
+          }
       }
     }
 
@@ -143,11 +153,10 @@ object WorkerActor {
           }
         case payload: ControlMessage =>
           Thread.sleep(Random.between(10,500))
-          OrderingEnforcer.reorderMessage(controlFIFOGate, payload.sender, payload.seq, payload).foreach {
-            i =>
-              i.foreach{
-                m => processControlMessage(m,false)
-              }
+          if(recoveryModule.isRecovering){
+            stashedMessages.enqueue(payload)
+          }else{
+            processControlMessage(payload, false)
           }
       }
     }

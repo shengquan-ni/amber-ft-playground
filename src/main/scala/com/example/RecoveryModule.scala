@@ -14,18 +14,13 @@ class RecoveryModule[T <: ControlMessage, U](name:String, version:Long, fifoGate
 
   val persistedControlMessages:mutable.Queue[RecoverableMessage[T]] = mutable.Queue(storageModule.load():_*)
 
+  var recovering: Boolean = version != 0
+
   println("recovery: previous controls: \n"+persistedControlMessages.mkString("\n"))
   storageModule.clean()
   if(isRecovering){
-
-    persistedControlMessages.foreach{
-      x => if(!fifoGate.contains(x.payload.sender)){
-        fifoGate(x.payload.sender) = new OrderingEnforcer[ControlMessage]
-      }
-        fifoGate(x.payload.sender).current = x.payload.seq+1
-    }
-
     if(persistedControlMessages.isEmpty){
+      recovering = false
       GlobalControl.resendControlMessagesFor(name)
     }
   }
@@ -60,6 +55,7 @@ class RecoveryModule[T <: ControlMessage, U](name:String, version:Long, fifoGate
     val old = persistedControlMessages.isEmpty
     val ret = persistedControlMessages.dequeueWhile(f => f.seqs == seqs).map(x => x.payload).toSeq
     if(old != persistedControlMessages.isEmpty){
+      recovering = false
       GlobalControl.resendControlMessagesFor(name)
     }
     ret
@@ -79,6 +75,6 @@ class RecoveryModule[T <: ControlMessage, U](name:String, version:Long, fifoGate
     println(s"persisting $recoverableMessage")
     storageModule.persist(recoverableMessage)
   }
-  def isRecovering: Boolean = version != 0
+  def isRecovering: Boolean = recovering
 
 }
